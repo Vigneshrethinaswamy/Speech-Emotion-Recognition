@@ -163,7 +163,7 @@ python main.py --force-extract
 
 ## Author
 
-**Vignesh Rethinaswamy**
+**Vignesh R**
 
 Artificial Intelligence & Machine Learning Student
 
