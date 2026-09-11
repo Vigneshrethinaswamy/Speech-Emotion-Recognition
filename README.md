@@ -146,8 +146,8 @@ Speech-Emotion-Recognition/
 Clone the repository and install the required dependencies:
 
 ```bash
-git clone https://github.com/Vigneshrethinaswamy/CodeAlpha_EmotionRecognitionFromSpeech.git
-cd CodeAlpha_EmotionRecognitionFromSpeech
+git clone https://github.com/Vigneshrethinaswamy/Speech-Emotion-Recognition.git
+cd Speech-Emotion-Recognition
 pip install -r requirements.txt
 ```
 
