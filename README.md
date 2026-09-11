@@ -1,12 +1,14 @@
-# 🎙️ Emotion Recognition from Speech
+# 🎙️ Speech Emotion Recognition
 
-A deep learning project developed during the CodeAlpha Machine Learning Internship that classifies human emotions from speech audio using acoustic features and a CNN-BiLSTM network.
+A deep learning project that analyzes human speech and predicts the emotional state expressed in an audio recording. The system combines rich acoustic feature extraction with a hybrid **CNN + Bidirectional LSTM** architecture to classify speech into eight emotion categories.
 
 ---
 
 ## 📌 Overview
 
-The system analyzes speech recordings from the RAVDESS dataset and predicts one of eight emotions:
+Speech contains a wide range of acoustic cues related to emotion, including pitch, energy, spectral characteristics, rhythm, and timbre. This project extracts multiple complementary audio features and uses a deep learning model to recognize the emotion conveyed by a speaker.
+
+The system predicts one of eight emotions:
 
 - Neutral
 - Calm
@@ -19,19 +21,20 @@ The system analyzes speech recordings from the RAVDESS dataset and predicts one 
 
 ---
 
-## Dataset
+## 🗂️ Dataset
 
-RAVDESS (Ryerson Audio-Visual Database of Emotional Speech and Song)
+The model is trained and evaluated using the **RAVDESS (Ryerson Audio-Visual Database of Emotional Speech and Song)** dataset.
 
 - 24 actors
-- 1440 speech recordings
+- 1,440 speech recordings
 - 8 emotion classes
+- Emotion labels are encoded in the RAVDESS filenames
 
 ---
 
-## Feature Extraction
+## 🎧 Feature Extraction
 
-The following audio features are extracted using Librosa:
+Audio features are extracted using **Librosa**. The pipeline combines several representations to capture complementary properties of speech:
 
 - MFCC
 - Delta MFCC
@@ -43,55 +46,81 @@ The following audio features are extracted using Librosa:
 - Zero Crossing Rate
 - RMS Energy
 
-Total Feature Dimension: **275**
+The resulting feature vector contains **275 dimensions** after mean pooling.
+
+The training pipeline also includes waveform augmentation such as:
+
+- Gaussian noise
+- Pitch shifting
+- Time stretching
+- SpecAugment-style Mel-spectrogram masking
 
 ---
 
-## Model Architecture
+## 🧠 Model Architecture
 
-CNN + Bidirectional LSTM
+The project uses a hybrid **Convolutional Neural Network + Bidirectional LSTM** architecture.
 
+```text
+Input (275 × 1)
+        ↓
+Conv1D (64)
+        ↓
+Batch Normalization
+        ↓
+Max Pooling
+        ↓
+Dropout
+        ↓
+Conv1D (128)
+        ↓
+Batch Normalization
+        ↓
+Max Pooling
+        ↓
+Dropout
+        ↓
+Bidirectional LSTM (128)
+        ↓
+Dense (256)
+        ↓
+Dropout
+        ↓
+Dense (128)
+        ↓
+Dropout
+        ↓
+Softmax (8 classes)
 ```
-Input (275×1)
 
-↓ Conv1D(64)
-↓ Batch Normalization
-↓ Max Pooling
-↓ Dropout
+### Why CNN + BiLSTM?
 
-↓ Conv1D(128)
-↓ Batch Normalization
-↓ Max Pooling
-↓ Dropout
-
-↓ Bidirectional LSTM(128)
-
-↓ Dense(256)
-↓ Dropout
-
-↓ Dense(128)
-↓ Dropout
-
-↓ Softmax (8 classes)
-```
+- **CNN layers** learn local patterns in the extracted acoustic feature representation.
+- **Bidirectional LSTM** captures relationships across the feature sequence in both directions.
+- **Dense layers** combine the learned representations for final emotion classification.
 
 ---
 
-## Training Techniques
+## ⚙️ Training Strategy
 
-- StandardScaler
-- Class Weights
+Several techniques are used to improve generalization and training stability:
+
+- StandardScaler normalization
+- Class weighting
+- Data augmentation
 - EarlyStopping
 - ReduceLROnPlateau
 - ModelCheckpoint
-- Data Augmentation
+- Group-aware dataset splitting by actor
+
+Using actor-aware splitting helps reduce the risk of the model simply learning speaker-specific characteristics instead of emotional patterns.
 
 ---
 
-## Project Structure
+## 📁 Project Structure
 
-```
-CodeAlpha_EmotionRecognitionFromSpeech/
+```text
+Speech-Emotion-Recognition/
 │
 ├── data/
 ├── models/
@@ -112,19 +141,19 @@ CodeAlpha_EmotionRecognitionFromSpeech/
 
 ---
 
-## Installation
+## 🚀 Installation
+
+Clone the repository and install the required dependencies:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/CodeAlpha_EmotionRecognitionFromSpeech.git
-
+git clone https://github.com/Vigneshrethinaswamy/CodeAlpha_EmotionRecognitionFromSpeech.git
 cd CodeAlpha_EmotionRecognitionFromSpeech
-
 pip install -r requirements.txt
 ```
 
 ---
 
-## Run
+## ▶️ Running the Project
 
 Train and evaluate the model:
 
@@ -132,7 +161,7 @@ Train and evaluate the model:
 python main.py
 ```
 
-Force feature extraction:
+Force feature extraction before training:
 
 ```bash
 python main.py --force-extract
@@ -140,9 +169,26 @@ python main.py --force-extract
 
 ---
 
-## Libraries Used
+## 📊 Evaluation
 
-- TensorFlow
+The evaluation pipeline is designed to measure model performance on held-out data and can be extended with metrics such as:
+
+- Accuracy
+- Precision
+- Recall
+- F1-score
+- Confusion matrix
+
+Model checkpoints and generated plots can be stored in the `models/` and `plots/` directories.
+
+> **Note:** The repository does not currently document a final benchmark accuracy in this README. The exact test accuracy should be taken from the output generated by the evaluation pipeline rather than estimated from the training configuration.
+
+---
+
+## 🛠️ Technologies Used
+
+- Python
+- TensorFlow / Keras
 - NumPy
 - Librosa
 - Scikit-learn
@@ -151,20 +197,23 @@ python main.py --force-extract
 
 ---
 
-## Future Improvements
+## 🔮 Future Improvements
 
-- Attention Mechanisms
-- Transformer-based Models
-- Hyperparameter Optimization
-- Real-time Emotion Recognition
-- Streamlit Web Application
+Potential improvements include:
+
+- Attention mechanisms
+- Transformer-based speech emotion models
+- Hyperparameter optimization
+- Real-time microphone-based emotion recognition
+- Streamlit web application
+- Larger and more diverse speech datasets
+- More detailed per-class performance analysis
 
 ---
 
-## Author
+## 👨‍💻 Author
 
-**Vignesh R**
-
+**Vignesh R**  
 Artificial Intelligence & Machine Learning Student
 
-CodeAlpha Machine Learning Internship
+This project is maintained as a personal machine learning project focused on speech processing, feature engineering, and deep learning-based emotion classification.
