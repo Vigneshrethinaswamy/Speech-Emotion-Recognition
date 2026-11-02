@@ -705,7 +705,7 @@ def split_dataset_files(
     # Group by actor (not file index) so every recording from one speaker
     # stays entirely on one side of the split.
     groups = np.asarray([Path(path).parent.name for path in file_paths])
-    invalid_groups = sorted({g for g in groups if re.fullmatch(r"Actor_\\d{2}", g) is None})
+    invalid_groups = sorted({g for g in groups if re.fullmatch(r"Actor_\d{2}", g) is None})
     if invalid_groups:
         raise ValueError(
             "Expected each RAVDESS recording to be directly inside an "
