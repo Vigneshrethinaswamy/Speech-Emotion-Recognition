@@ -1,14 +1,14 @@
-# 🎙️ Speech Emotion Recognition
+# Speech Emotion Recognition
 
-A deep learning project that analyzes human speech and predicts the emotional state expressed in an audio recording. The system combines rich acoustic feature extraction with a hybrid **CNN + Bidirectional LSTM** architecture to classify speech into eight emotion categories.
+A TensorFlow/Keras deep-learning project that classifies speech recordings into eight emotion categories using acoustic feature engineering and a CNN–Bidirectional LSTM model.
 
----
+> **Evaluation status:** The current code uses an actor-disjoint train/test split. The earlier approximately 81% result was produced before that evaluation correction and must not be interpreted as performance on unseen speakers. A fresh run with the corrected split is required before reporting a benchmark.
 
-## 📌 Overview
+## Overview
 
-Speech contains a wide range of acoustic cues related to emotion, including pitch, energy, spectral characteristics, rhythm, and timbre. This project extracts multiple complementary audio features and uses a deep learning model to recognize the emotion conveyed by a speaker.
+The pipeline extracts fixed-length acoustic features from RAVDESS audio and trains a CNN–BiLSTM classifier.
 
-The system predicts one of eight emotions:
+The eight target classes are:
 
 - Neutral
 - Calm
@@ -19,113 +19,72 @@ The system predicts one of eight emotions:
 - Disgust
 - Surprised
 
----
+## Dataset
 
-## 🗂️ Dataset
+The project expects the **RAVDESS audio-speech** dataset locally under `data/ravdess/`.
 
-The model is trained and evaluated using the **RAVDESS (Ryerson Audio-Visual Database of Emotional Speech and Song)** dataset.
-
-- 24 actors
+- 24 actors (speakers)
 - 1,440 speech recordings
-- 8 emotion classes
-- Emotion labels are encoded in the RAVDESS filenames
+- 8 emotion labels encoded in the filenames
 
----
+The dataset is not included in this repository. Download it from its official distribution and place the extracted actor folders under `data/ravdess/`. The extraction code searches recursively for `.wav` files.
 
-## 🎧 Feature Extraction
+## Feature extraction
 
-Audio features are extracted using **Librosa**. The pipeline combines several representations to capture complementary properties of speech:
+Features are extracted with Librosa and mean-pooled into a 275-dimensional vector:
 
-- MFCC
-- Delta MFCC
-- Delta-Delta MFCC
-- Chroma Features
-- Mel Spectrogram
-- Spectral Contrast
+- MFCC, delta MFCC and delta-delta MFCC
+- Chroma STFT
+- Mel spectrogram
+- Spectral contrast
 - Tonnetz
-- Zero Crossing Rate
-- RMS Energy
+- Zero-crossing rate
+- RMS energy
 
-The resulting feature vector contains **275 dimensions** after mean pooling.
+Training-only waveform augmentation can generate Gaussian-noise, pitch-shifted and time-stretched variants. SpecAugment-style Mel masking is also supported by the extraction functions, but is disabled by default in the current end-to-end pipeline.
 
-The training pipeline also includes waveform augmentation such as:
+## Model
 
-- Gaussian noise
-- Pitch shifting
-- Time stretching
-- SpecAugment-style Mel-spectrogram masking
-
----
-
-## 🧠 Model Architecture
-
-The project uses a hybrid **Convolutional Neural Network + Bidirectional LSTM** architecture.
+The current model is a one-dimensional CNN followed by a bidirectional LSTM and dense classification layers.
 
 ```text
-Input (275 × 1)
-        ↓
-Conv1D (64)
-        ↓
-Batch Normalization
-        ↓
-Max Pooling
-        ↓
-Dropout
-        ↓
-Conv1D (128)
-        ↓
-Batch Normalization
-        ↓
-Max Pooling
-        ↓
-Dropout
-        ↓
-Bidirectional LSTM (128)
-        ↓
-Dense (256)
-        ↓
-Dropout
-        ↓
-Dense (128)
-        ↓
-Dropout
-        ↓
-Softmax (8 classes)
+Input: (275, 1)
+  → Conv1D(64) → Batch Normalization → Max Pooling → Dropout
+  → Conv1D(128) → Batch Normalization → Max Pooling → Dropout
+  → Bidirectional LSTM(128)
+  → Dense(256) → Dropout
+  → Dense(128) → Dropout
+  → Dense(8, Softmax)
 ```
 
-### Why CNN + BiLSTM?
+The model is compiled with Adam and categorical cross-entropy. The current model configuration sets label smoothing to 0.0.
 
-- **CNN layers** learn local patterns in the extracted acoustic feature representation.
-- **Bidirectional LSTM** captures relationships across the feature sequence in both directions.
-- **Dense layers** combine the learned representations for final emotion classification.
+## Evaluation protocol: actor-disjoint split
 
----
+The split is performed on the original recordings **before augmentation**. The group key is the actor directory name (`Actor_01` through `Actor_24`), not the individual audio filename.
 
-## ⚙️ Training Strategy
+- All recordings from a given actor are assigned to either training or test, never both.
+- Augmented samples are generated only from training actors.
+- Test features are extracted from original, unaugmented recordings.
+- The StandardScaler is fitted on training features only and then applied to the test features.
+- The default test fraction is 20% of actors, using `GroupShuffleSplit` with random state 42.
 
-Several techniques are used to improve generalization and training stability:
+This protocol evaluates generalization to speakers not represented in the training split. It is different from a random recording-level split and should not be compared directly with results from that easier protocol.
 
-- StandardScaler normalization
-- Class weighting
-- Data augmentation
-- EarlyStopping
-- ReduceLROnPlateau
-- ModelCheckpoint
-- Group-aware dataset splitting by actor
+## Current results and limitations
 
-Using actor-aware splitting helps reduce the risk of the model simply learning speaker-specific characteristics instead of emotional patterns.
+No verified benchmark for the corrected actor-disjoint split is currently published in this repository. The earlier ~81% figure was obtained before the actor-wise evaluation correction and is therefore not presented as the current model's test accuracy.
 
----
+To produce a valid result, regenerate the processed arrays with the current actor-wise splitter, train the model, and evaluate it on the held-out actors. Report at least accuracy, macro F1, per-class precision/recall/F1, and the confusion matrix. Because a single 80/20 actor split can be sensitive to which speakers are held out, repeated actor-grouped evaluation would provide a more stable estimate.
 
-## 📁 Project Structure
+## Project structure
 
 ```text
 Speech-Emotion-Recognition/
-│
-├── data/
-├── models/
-├── plots/
-├── notebooks/
+├── data/                 # Local RAVDESS data (not committed)
+├── data/processed/       # Generated train/test feature arrays
+├── models/               # Generated model and scaler artifacts
+├── plots/                # Generated training curves and evaluation plots
 ├── src/
 │   ├── feature_extraction.py
 │   ├── data_loader.py
@@ -133,87 +92,56 @@ Speech-Emotion-Recognition/
 │   ├── train.py
 │   ├── evaluate.py
 │   └── predict.py
-│
 ├── main.py
-├── requirements.txt
-└── README.md
+└── requirements.txt
 ```
 
----
+## Setup
 
-## 🚀 Installation
-
-Clone the repository and install the required dependencies:
+Python dependencies:
 
 ```bash
-git clone https://github.com/Vigneshrethinaswamy/Speech-Emotion-Recognition.git
-cd Speech-Emotion-Recognition
+python -m venv .venv
+# Windows PowerShell:
+.venv\\Scripts\\Activate.ps1
+# macOS/Linux:
+# source .venv/bin/activate
+
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
----
+Place the RAVDESS audio-speech actor folders under `data/ravdess/`.
 
-## ▶️ Running the Project
+## Run
 
-Train and evaluate the model:
-
-```bash
-python main.py
-```
-
-Force feature extraction before training:
+Regenerate features and split by actor:
 
 ```bash
 python main.py --force-extract
 ```
 
----
+Train/evaluate using cached actor-disjoint features:
 
-## 📊 Evaluation
+```bash
+python main.py
+```
 
-The evaluation pipeline is designed to measure model performance on held-out data and can be extended with metrics such as:
+The pipeline saves the model under `models/` and diagnostic plots/reports under `plots/`. Use `--force-extract` after changing the dataset or split implementation; otherwise existing cached arrays may reflect an older split.
 
-- Accuracy
-- Precision
-- Recall
-- F1-score
-- Confusion matrix
+## Reproducibility notes
 
-Model checkpoints and generated plots can be stored in the `models/` and `plots/` directories.
+- Split seed: 42
+- Default held-out actor fraction: 20%
+- Maximum epochs: 50 (early stopping may stop earlier)
+- Training batch size: 32 in `src/train.py`; the command-line entry point currently defaults to 64 and passes that value through.
+- Mixup and class weighting are configurable in `src/train.py`; Mixup is enabled by default.
+- Processed arrays, model checkpoints and evaluation plots are generated locally and are not included in the repository.
 
-> **Note:** The repository does not currently document a final benchmark accuracy in this README. The exact test accuracy should be taken from the output generated by the evaluation pipeline rather than estimated from the training configuration.
+## Technologies
 
----
+Python, TensorFlow/Keras, Librosa, NumPy, scikit-learn, Matplotlib, Seaborn and Joblib.
 
-## 🛠️ Technologies Used
+## Author
 
-- Python
-- TensorFlow / Keras
-- NumPy
-- Librosa
-- Scikit-learn
-- Matplotlib
-- Joblib
-
----
-
-## 🔮 Future Improvements
-
-Potential improvements include:
-
-- Attention mechanisms
-- Transformer-based speech emotion models
-- Hyperparameter optimization
-- Real-time microphone-based emotion recognition
-- Streamlit web application
-- Larger and more diverse speech datasets
-- More detailed per-class performance analysis
-
----
-
-## 👨‍💻 Author
-
-**Vignesh R**  
-Artificial Intelligence & Machine Learning Student
-
-This project is maintained as a personal machine learning project focused on speech processing, feature engineering, and deep learning-based emotion classification.
+**Vignesh R** — Artificial Intelligence & Machine Learning
