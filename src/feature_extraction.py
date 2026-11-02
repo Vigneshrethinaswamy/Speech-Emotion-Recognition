@@ -926,7 +926,7 @@ def process_dataset(
     test_size : float, default=0.2
         Fraction of ACTORS to hold out for the test split.
     random_state : int, default=42
-        Random seed for the file-level split, for reproducibility.
+        Random seed for the actor-level split, for reproducibility.
 
     Returns
     -------
