@@ -224,7 +224,7 @@ def load_and_prepare_data(
 
     NOTE: this function no longer performs any train/test splitting. The
     split was already decided in ``feature_extraction.process_dataset()``
-    on source-file identity, before augmentation existed. This function's
+    on actor identity (Actor_XX), before augmentation existed. This function's
     job is strictly: load the four pre-split arrays, fit/apply
     standardization, reshape, and one-hot encode.
 
