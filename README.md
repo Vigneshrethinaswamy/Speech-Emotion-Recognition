@@ -129,6 +129,14 @@ python main.py
 
 The pipeline saves the model under `models/` and diagnostic plots/reports under `plots/`. Use `--force-extract` after changing the dataset or split implementation; otherwise existing cached arrays may reflect an older split.
 
+## Tests
+
+The repository includes regression tests for actor-disjoint splitting and rejection of invalid actor-directory paths. Run them with:
+
+```bash
+python -m unittest discover -s tests
+```
+
 ## Reproducibility notes
 
 - Split seed: 42
