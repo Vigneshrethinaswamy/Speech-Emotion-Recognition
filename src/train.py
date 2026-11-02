@@ -48,20 +48,15 @@ entirely (passed as a plain tuple to ``validation_data=``), so it is
 never mixed, masked, or otherwise perturbed -- evaluation must always see
 the model's real, unaltered generalization performance.
 
-Data leakage note (pre-existing, not introduced by this change)
----------------------------------------------------------------------
-The train/test split happens in ``data_loader.load_and_prepare_data()``
-on the FULL pool of original + augmented feature rows produced by
-``feature_extraction.process_dataset()``. Augmented variants of a given
-source utterance and that utterance's original row are not explicitly
-grouped before splitting, so it is possible for an augmented copy of an
-utterance to land in the test split while another row derived from the
-same utterance lands in train. This was already true of the pipeline that
-achieved the 81% baseline and is NOT something introduced by Mixup,
-SpecAugment, or the changes in this file. It is flagged here rather than
-silently fixed, since correcting it would require changing how
-``data_loader.py`` splits the data (grouping by source-file identity
-before splitting), which is a larger behavioral change than requested.
+Evaluation protocol note
+-----------------------
+The current feature-extraction pipeline groups the original RAVDESS
+recordings by Actor_XX before augmentation. All recordings from a speaker
+are assigned to one side of the train/test split, augmented variants are
+generated only for training actors, and test recordings remain unaugmented.
+The held-out test set therefore evaluates actors not seen during training.
+Existing cached feature arrays must be regenerated with --force-extract
+if they were created by an older recording-level split.
 
 Manual verification performed before delivering this file
 ---------------------------------------------------------------
@@ -81,7 +76,7 @@ Manual verification performed before delivering this file
       data shaped like the real pipeline's output before handing this
       file over.
 
-Author: Senior ML Engineering Team
+Author: Vignesh R
 """
 
 from __future__ import annotations
