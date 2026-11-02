@@ -8,11 +8,11 @@ CNN-BiLSTM training (v4 - leakage-safe; splitting removed from this module).
 
     1. Load the four pre-split arrays from disk -- the train/test split
        itself is now decided in ``feature_extraction.process_dataset()``,
-       on source-file identity, BEFORE augmentation exists. This module no
+       on actor identity (Actor_XX), BEFORE augmentation exists. This module no
        longer calls ``train_test_split`` (or any splitter) at all.
     2. Fit a ``StandardScaler`` on the TRAINING split only, then apply the
        same fitted transform to both train and test splits. This avoids a
-       SECOND, independent leakage vector: even with a correct file-level
+       SECOND, independent leakage vector: even with a correct actor-level
        split, fitting the scaler on combined data would leak test-set
        statistics into the features the model trains on.
     3. Persist the fitted scaler to disk (``models/scaler.pkl``) so that
