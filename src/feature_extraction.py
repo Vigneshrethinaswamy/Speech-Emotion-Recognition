@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -657,35 +658,29 @@ def split_dataset_files(
     random_state: int = 42,
 ) -> Tuple[List[Path], List[Path], List[int], List[int]]:
     """
-    Split the ORIGINAL (un-augmented) file list into train/test subsets
-    using ``GroupShuffleSplit``, with each source file's own path as its
-    group key.
+    Split the ORIGINAL (un-augmented) recording list into train/test subsets
+    using ``GroupShuffleSplit``, grouping by the RAVDESS actor directory
+    (Actor_01 ... Actor_24), not by individual recording.
 
-    This is the leakage-prevention step: splitting happens here, on the
-    1,440 raw RAVDESS files, BEFORE any augmentation or SpecAugment
-    expansion exists. Every augmented row generated later for a given file
-    inherits that file's train/test assignment, so it is structurally
-    impossible for an augmented variant of a test-split utterance to end
-    up in the training set (or vice versa) -- there is nothing left to
-    "leak" across, since the grouping decision is made before expansion.
+    This prevents recordings from the same actor appearing in both train
+    and test. The split is performed on the original recordings before
+    augmentation, so augmented variants are generated only from training
+    actors. This is an actor-disjoint evaluation split; it is a more
+    demanding test of generalization to unseen speakers.
 
-    ``GroupShuffleSplit`` (rather than plain ``train_test_split``) is used
-    deliberately: at this stage every file is trivially its own group (one
-    row each), so the numeric result is equivalent to a plain shuffled
-    split, but using the group-aware splitter makes the
-    "no group straddles both sides" guarantee structural and explicit
-    rather than incidental. If this function is ever extended to operate
-    on an already-expanded (post-augmentation) row list, the group-based
-    guarantee continues to hold automatically.
+    Each input path must be directly inside an Actor_XX directory. The
+    function validates actor directory names and verifies that the actor
+    sets do not overlap after splitting.
 
     Parameters
     ----------
     file_paths : List[Path]
-        Source file paths, as returned by ``discover_dataset_files``.
+        Source file paths, each directly inside an Actor_XX directory, as
+        returned by ``discover_dataset_files``.
     labels : List[int]
         Parallel list of integer emotion labels.
     test_size : float, default=0.2
-        Fraction of FILES (not augmented rows) to hold out for testing.
+        Fraction of ACTORS (not augmented rows) to hold out for testing.
     random_state : int, default=42
         Random seed for reproducibility.
 
@@ -706,17 +701,22 @@ def split_dataset_files(
             "must have the same length."
         )
 
-    # Each file is its own group: the group key is simply the file's index
-    # (equivalently, its path), since at this stage there is exactly one
-    # row per file. This makes GroupShuffleSplit guarantee that no group
-    # (and therefore no source file, and therefore none of its eventual
-    # augmented children) is split across train and test.
-    n_files = len(file_paths)
-    groups = np.arange(n_files)
-    labels_arr = np.array(labels)
+    # The parent directory encodes the speaker identity in RAVDESS.
+    # Group by actor (not file index) so every recording from one speaker
+    # stays entirely on one side of the split.
+    groups = np.asarray([Path(path).parent.name for path in file_paths])
+    invalid_groups = sorted({g for g in groups if re.fullmatch(r"Actor_\\d{2}", g) is None})
+    if invalid_groups:
+        raise ValueError(
+            "Expected each RAVDESS recording to be directly inside an "
+            f"Actor_XX directory; invalid actor folders: {invalid_groups[:5]}"
+        )
+    if len(np.unique(groups)) < 2:
+        raise ValueError("At least two distinct actors are required for an actor-wise split.")
 
+    labels_arr = np.asarray(labels)
     splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-    train_idx, test_idx = next(splitter.split(X=groups, y=labels_arr, groups=groups))
+    train_idx, test_idx = next(splitter.split(X=np.zeros(len(file_paths)), y=labels_arr, groups=groups))
 
     train_file_paths = [file_paths[i] for i in train_idx]
     test_file_paths = [file_paths[i] for i in test_idx]
@@ -729,24 +729,21 @@ def split_dataset_files(
             "Check test_size and the number of input files."
         )
 
-    # Defensive verification: confirm zero overlap between the two file
-    # sets. This should be mathematically guaranteed by GroupShuffleSplit,
-    # but we check explicitly since this invariant is the entire point of
-    # this function.
-    train_set = {str(p) for p in train_file_paths}
-    test_set = {str(p) for p in test_file_paths}
-    overlap = train_set & test_set
+    # Defensive verification: no actor may appear on both sides.
+    train_actors = {Path(p).parent.name for p in train_file_paths}
+    test_actors = {Path(p).parent.name for p in test_file_paths}
+    overlap = train_actors & test_actors
     if overlap:
         raise RuntimeError(
-            f"INTERNAL ERROR: {len(overlap)} file(s) appear in both the train "
-            f"and test splits: {sorted(overlap)[:5]}... This should be "
-            "impossible with GroupShuffleSplit and indicates a bug."
+            f"INTERNAL ERROR: actor(s) appear in both splits: {sorted(overlap)}"
         )
 
     logger.info(
-        "Split %d source files -> %d train / %d test (test_size=%.2f). "
-        "Verified zero file overlap between splits.",
-        n_files,
+        "Actor-wise split: %d actors -> %d train / %d test; "
+        "%d/%d source recordings (test_size=%.2f).",
+        len(np.unique(groups)),
+        len(train_actors),
+        len(test_actors),
         len(train_file_paths),
         len(test_file_paths),
         test_size,
@@ -898,8 +895,8 @@ def process_dataset(
 
         1. Discover all original RAVDESS files (``discover_dataset_files``).
         2. Split them into train/test FILE LISTS using ``GroupShuffleSplit``
-           on source-file identity (``split_dataset_files``) -- this
-           happens BEFORE any augmentation exists.
+           grouped by actor identity (``Actor_XX``) -- this happens BEFORE
+           any augmentation exists. No actor appears in both splits.
         3. Extract features for the training files WITH augmentation and
            (optionally) SpecAugment (``process_files(..., augment=True)``).
         4. Extract features for the test files WITHOUT any augmentation or
@@ -927,8 +924,7 @@ def process_dataset(
         If True, additionally apply SpecAugment-style masking to augmented
         TRAINING rows only. Has no effect if ``augment=False``.
     test_size : float, default=0.2
-        Fraction of ORIGINAL FILES (not augmented rows) to hold out for
-        the test split.
+        Fraction of ACTORS to hold out for the test split.
     random_state : int, default=42
         Random seed for the file-level split, for reproducibility.
 
