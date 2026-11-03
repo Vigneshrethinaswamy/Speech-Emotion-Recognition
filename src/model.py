@@ -98,3 +98,4 @@ def build_model(
 
 if __name__ == "__main__":
     build_model(input_shape=(275, 1))
+

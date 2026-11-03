@@ -1,155 +1,164 @@
 # Speech Emotion Recognition
 
-A TensorFlow/Keras deep-learning project that classifies speech recordings into eight emotion categories using acoustic feature engineering and a CNN–Bidirectional LSTM model.
+An eight-class speech emotion classifier built with a CNN–BiLSTM and the RAVDESS audio-speech dataset. This project focuses on speaker-independent evaluation, leakage-aware preprocessing, and controlled validation experiments.
 
-> **Evaluation status:** The current code uses an actor-disjoint train/test split. The earlier approximately 81% result was produced before that evaluation correction and must not be interpreted as performance on unseen speakers. A fresh run with the corrected split is required before reporting a benchmark.
+> **Evaluation note:** The reported multi-seed results below are validation macro F1 scores on one fixed actor-disjoint split. They are not test metrics. A historical test report (40.42% accuracy; 0.3948 macro F1) was exposed by an earlier smoke test and is retained only as historical context; it is not an untouched final benchmark and was not used for model selection.
 
-## Overview
+## What the project does
 
-The pipeline extracts fixed-length acoustic features from RAVDESS audio and trains a CNN–BiLSTM classifier.
+- Extracts 275 pooled acoustic features from each recording: MFCCs and their deltas, chroma, Mel energy, spectral contrast, Tonnetz, zero-crossing rate, and RMS energy.
+- Splits recordings by actor before generating training augmentation, keeping each speaker entirely within one split.
+- Fits feature scaling on training data only.
+- Trains a 405,128-parameter Conv1D–BiLSTM classifier with dropout, class weighting, optional training-only Mixup, early stopping, and learning-rate scheduling.
+- Saves checkpoints, training curves, reports, and controlled experiment records locally.
 
-The eight target classes are:
+The classes are Neutral, Calm, Happy, Sad, Angry, Fearful, Disgust, and Surprised.
 
-- Neutral
-- Calm
-- Happy
-- Sad
-- Angry
-- Fearful
-- Disgust
-- Surprised
+## Architecture
+
+Editable Mermaid source: [`docs/architecture.mmd`](docs/architecture.mmd).
+
+```mermaid
+flowchart LR
+    A[RAVDESS WAV recordings] --> B[Group by actor]
+    B --> C[70/15/15 actor-disjoint split]
+    C --> D[Training actors: waveform augmentation]
+    C --> E[Validation and test: original recordings]
+    D --> F[275 pooled acoustic features]
+    E --> F
+    F --> G[Scaler fitted on training features]
+    G --> H[Conv1D 64 → Conv1D 128]
+    H --> I[Bidirectional LSTM 128]
+    I --> J[Dense 256 → Dense 128 → Softmax 8]
+    J --> K[Validation metrics / saved model]
+```
+
+The implementation is in [`src/feature_extraction.py`](src/feature_extraction.py), [`src/data_loader.py`](src/data_loader.py), [`src/model.py`](src/model.py), and [`src/train.py`](src/train.py).
 
 ## Dataset
 
-The project expects the **RAVDESS audio-speech** dataset locally under `data/ravdess/`.
+Download the RAVDESS audio-speech dataset separately and place the extracted actor folders under `data/ravdess/`. The extraction code searches recursively for `.wav` files. The dataset is not included in this repository.
 
-- 24 actors (speakers)
-- 1,440 speech recordings
-- 8 emotion labels encoded in the filenames
-
-The dataset is not included in this repository. Download it from its official distribution and place the extracted actor folders under `data/ravdess/`. The extraction code searches recursively for `.wav` files.
-
-## Feature extraction
-
-Features are extracted with Librosa and mean-pooled into a 275-dimensional vector:
-
-- MFCC, delta MFCC and delta-delta MFCC
-- Chroma STFT
-- Mel spectrogram
-- Spectral contrast
-- Tonnetz
-- Zero-crossing rate
-- RMS energy
-
-Training-only waveform augmentation can generate Gaussian-noise, pitch-shifted and time-stretched variants. SpecAugment-style Mel masking is also supported by the extraction functions, but is disabled by default in the current end-to-end pipeline.
-
-## Model
-
-The current model is a one-dimensional CNN followed by a bidirectional LSTM and dense classification layers.
-
-```text
-Input: (275, 1)
-  → Conv1D(64) → Batch Normalization → Max Pooling → Dropout
-  → Conv1D(128) → Batch Normalization → Max Pooling → Dropout
-  → Bidirectional LSTM(128)
-  → Dense(256) → Dropout
-  → Dense(128) → Dropout
-  → Dense(8, Softmax)
-```
-
-The model is compiled with Adam and categorical cross-entropy. The current model configuration sets label smoothing to 0.0.
-
-## Evaluation protocol: actor-disjoint split
-
-The split is performed on the original recordings **before augmentation**. The group key is the actor directory name (`Actor_01` through `Actor_24`), not the individual audio filename.
-
-- All recordings from a given actor are assigned to either training or test, never both.
-- Augmented samples are generated only from training actors.
-- Test features are extracted from original, unaugmented recordings.
-- The StandardScaler is fitted on training features only and then applied to the test features.
-- The default test fraction is 20% of actors, using `GroupShuffleSplit` with random state 42.
-
-This protocol evaluates generalization to speakers not represented in the training split. It is different from a random recording-level split and should not be compared directly with results from that easier protocol.
-
-## Current results and limitations
-
-No verified benchmark for the corrected actor-disjoint split is currently published in this repository. The earlier ~81% figure was obtained before the actor-wise evaluation correction and is therefore not presented as the current model's test accuracy.
-
-To produce a valid result, regenerate the processed arrays with the current actor-wise splitter, train the model, and evaluate it on the held-out actors. Report at least accuracy, macro F1, per-class precision/recall/F1, and the confusion matrix. Because a single 80/20 actor split can be sensitive to which speakers are held out, repeated actor-grouped evaluation would provide a more stable estimate.
-
-## Project structure
-
-```text
-Speech-Emotion-Recognition/
-├── data/                 # Local RAVDESS data (not committed)
-├── data/processed/       # Generated train/test feature arrays
-├── models/               # Generated model and scaler artifacts
-├── plots/                # Generated training curves and evaluation plots
-├── src/
-│   ├── feature_extraction.py
-│   ├── data_loader.py
-│   ├── model.py
-│   ├── train.py
-│   ├── evaluate.py
-│   └── predict.py
-├── main.py
-└── requirements.txt
-```
+The default split uses 16 training actors, 4 validation actors, and 4 test actors (960/240/240 original recordings). It is actor-disjoint, with the split created before augmentation. Augmented examples are generated only for training actors. Validation and test use original recordings; the scaler is fitted only on training features. The test split is not part of model selection.
 
 ## Setup
 
-Python dependencies:
+The project was run with Python 3.11.9 and TensorFlow 2.21.0. On native Windows, this TensorFlow setup is CPU-only; use WSL2 if you need TensorFlow's supported CUDA GPU workflow. Dependency versions are recorded in [`requirements.txt`](requirements.txt).
 
 ```bash
 python -m venv .venv
-# Windows PowerShell:
-.venv\\Scripts\\Activate.ps1
-# macOS/Linux:
-# source .venv/bin/activate
+```
 
+Activate the environment, then install dependencies:
+
+```powershell
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
-Place the RAVDESS audio-speech actor folders under `data/ravdess/`.
-
-## Run
-
-Regenerate features and split by actor:
-
 ```bash
-python main.py --force-extract
+# macOS / Linux
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-Train/evaluate using cached actor-disjoint features:
+Put RAVDESS audio under `data/ravdess/` before extracting features.
+
+## Run the pipeline
 
 ```bash
+# Build or validate the feature cache, train, and evaluate the held-out split
 python main.py
+
+# Force feature re-extraction and cache regeneration
+python main.py --force-extract
+
+# Optional arguments
+python main.py --data-dir data/ravdess --epochs 30 --batch-size 32
 ```
 
-The pipeline saves the model under `models/` and diagnostic plots/reports under `plots/`. Use `--force-extract` after changing the dataset or split implementation; otherwise existing cached arrays may reflect an older split.
+**The full pipeline command evaluates the held-out test split.** The test set has historical exposure in this project's development, so its resulting score should not be described as an untouched benchmark. The paired experiment runner below is validation-only.
+
+For one WAV prediction after training, use the saved model and matching scaler:
+
+```bash
+python -m src.predict path/to/recording.wav --model-path outputs/full_run/models/best_model.keras --scaler-path models/scaler.pkl
+```
+
+The model/scaler paths must exist. The pipeline saves its checkpoint and diagnostics under `outputs/full_run/`.
+
+## Controlled validation experiment
+
+Six trainings compared Mixup with no-Mixup on the same schema-v3 cache and fixed 16/4/4 actor split. Within each seed pair, architecture, class weights, optimizer, and settings were held constant; Mixup was the only change. Seeds were 42, 43, and 44. The comparison metric was validation macro F1. The runner reads the validation arrays for scoring and records that the test split was not evaluated or used for selection.
+
+| Seed | Mixup validation macro F1 | No-Mixup validation macro F1 | Difference (Mixup − No-Mixup) |
+|---:|---:|---:|---:|
+| 42 | 0.4431 | 0.4172 | +0.0259 |
+| 43 | 0.3887 | 0.3926 | −0.0039 |
+| 44 | 0.4152 | 0.3702 | +0.0450 |
+| **Mean paired change** |  |  | **+0.0223** |
+
+Mixup had the higher score in 2 of 3 seeds, with a mean paired improvement of +0.0223 macro F1. The comparison uses three training seeds on one fixed actor split; it does not establish broad generalization. The retained Mixup baseline was not replaced.
+
+The exact results and run metadata are in [`outputs/paired_seed_experiments/20261102-225131/results.json`](outputs/paired_seed_experiments/20261102-225131/results.json). Detailed protocol and earlier controlled comparisons are in [`outputs/full_run/experiment_notes.md`](outputs/full_run/experiment_notes.md). To rerun the paired experiment on the existing cache:
+
+```bash
+python run_paired_seed_experiments.py
+python run_paired_seed_experiments.py --seeds 42 43 44
+```
+
+Each invocation creates a new timestamped output directory and does not score the test split. The earlier single-seed runner is `python run_validation_experiments.py`; it also writes separate candidate outputs.
+
+## Artifacts and repository layout
+
+```text
+.
+├── main.py
+├── run_paired_seed_experiments.py
+├── run_validation_experiments.py
+├── requirements.txt
+├── src/                         # Feature extraction, data prep, model, training, evaluation, inference
+├── tests/                       # Actor-split/cache and seed-control regression tests
+├── docs/
+│   ├── architecture.mmd         # Editable architecture diagram
+│   └── interview_notes.md       # Interview explanation and questions
+├── data/                        # Local dataset and generated feature cache
+├── models/                      # Local legacy/default model and scaler files
+├── plots/                       # Local legacy plots
+└── outputs/
+    ├── full_run/                # Retained baseline, historical report, plots, experiment notes, resume entry
+    ├── experiments/             # Earlier controlled validation runs
+    └── paired_seed_experiments/ # Paired multi-seed validation score records
+```
+
+Model files, feature arrays, logs, and plots are local generated artifacts; they are not included in the tracked source tree by default. Only small experiment JSON and Markdown records are included; audio, feature caches, logs, plots, and model checkpoints remain local.
 
 ## Tests
 
-The repository includes regression tests for actor-disjoint splitting and rejection of invalid actor-directory paths. Run them with:
+Run the seven regression tests from the repository root:
 
 ```bash
-python -m unittest discover -s tests
+python -m unittest discover -s tests -v
 ```
 
-## Reproducibility notes
+They cover actor-disjoint splitting, cache integrity, CNN input reshaping, train-only scaler fitting, explicit seed propagation, and repeatable Mixup generation.
 
-- Split seed: 42
-- Default held-out actor fraction: 20%
-- Maximum epochs: 50 (early stopping may stop earlier)
-- Training batch size: 32 in `src/train.py`; the command-line entry point currently defaults to 64 and passes that value through.
-- Mixup and class weighting are configurable in `src/train.py`; Mixup is enabled by default.
-- Processed arrays, model checkpoints and evaluation plots are generated locally and are not included in the repository.
+## Limitations
+
+- RAVDESS is small (24 actors, 1,440 speech recordings); scores can depend heavily on which four actors are held out.
+- The six-run comparison uses one fixed actor split and three training seeds; it does not establish broad generalization.
+- The historical test report is exposed and cannot serve as a clean final benchmark. A fresh, untouched test set or a pre-registered repeated actor-grouped evaluation is needed for that claim.
+- Softmax confidence is not a calibrated probability of a person's true emotional state. Speech emotion labels are also context-dependent.
+- Native Windows TensorFlow 2.21.0 ran on CPU in the recorded environment.
+
+## Resume entry and interview preparation
+
+See [`outputs/full_run/resume_entry.md`](outputs/full_run/resume_entry.md) for a concise, evidence-based resume version and [`docs/interview_notes.md`](docs/interview_notes.md) for an explanation and technical Q&A.
 
 ## Technologies
 
-Python, TensorFlow/Keras, Librosa, NumPy, scikit-learn, Matplotlib, Seaborn and Joblib.
+Python, TensorFlow/Keras, Librosa, NumPy, scikit-learn, Matplotlib, Seaborn, and Joblib.
 
-## Author
-
-**Vignesh R** — Artificial Intelligence & Machine Learning

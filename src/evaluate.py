@@ -40,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_PLOTS_DIR = Path("plots")
+DEFAULT_PLOTS_DIR = Path(__file__).resolve().parents[1] / "plots"
 DEFAULT_CONFUSION_MATRIX_PATH = DEFAULT_PLOTS_DIR / "confusion_matrix.png"
 DEFAULT_CLASSIFICATION_REPORT_PATH = DEFAULT_PLOTS_DIR / "classification_report.txt"
 
@@ -139,9 +139,10 @@ if __name__ == "__main__":
         from src.data_loader import load_and_prepare_data
 
     logger.info("Loading saved model for standalone evaluation...")
-    loaded_model = tf.keras.models.load_model("models/emotion_model.keras")
+    loaded_model = tf.keras.models.load_model(Path(__file__).resolve().parents[1] / "models" / "emotion_model.keras")
 
-    _, X_test_data, _, y_test_data = load_and_prepare_data()
+    _, _, X_test_data, _, _, y_test_data = load_and_prepare_data()
     accuracy, report, matrix = evaluate_model(loaded_model, X_test_data, y_test_data)
 
     logger.info("Standalone evaluate.py run complete. Final accuracy=%.4f", accuracy)
+
