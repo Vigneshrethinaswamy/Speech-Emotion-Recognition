@@ -62,6 +62,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+import hashlib
+import json
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -140,12 +142,49 @@ FEATURE_DIM: int = (
 SAMPLE_RATE: int = 22050
 
 #: Default locations for raw data and processed feature arrays.
-DEFAULT_DATA_DIR = Path("data/ravdess")
-DEFAULT_PROCESSED_DIR = Path("data/processed")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data" / "ravdess"
+DEFAULT_PROCESSED_DIR = PROJECT_ROOT / "data" / "processed"
+DEFAULT_CACHE_METADATA_PATH = DEFAULT_PROCESSED_DIR / "cache_metadata.json"
 DEFAULT_X_TRAIN_PATH = DEFAULT_PROCESSED_DIR / "X_train.npy"
+DEFAULT_X_VAL_PATH = DEFAULT_PROCESSED_DIR / "X_val.npy"
 DEFAULT_X_TEST_PATH = DEFAULT_PROCESSED_DIR / "X_test.npy"
 DEFAULT_Y_TRAIN_PATH = DEFAULT_PROCESSED_DIR / "y_train.npy"
+DEFAULT_Y_VAL_PATH = DEFAULT_PROCESSED_DIR / "y_val.npy"
 DEFAULT_Y_TEST_PATH = DEFAULT_PROCESSED_DIR / "y_test.npy"
+
+
+def _sha256_file(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def dataset_fingerprint(data_dir: str | Path = DEFAULT_DATA_DIR) -> str:
+    """Hash the dataset contents and feature-extraction configuration."""
+    root = Path(data_dir).resolve()
+    records = [(path.relative_to(root).as_posix(), _sha256_file(path))
+               for path in sorted(root.rglob("*.wav"))]
+    payload = {"schema": 3, "files": records, "feature_dim": FEATURE_DIM,
+               "pipeline_source": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+               "n_mfcc": N_MFCC, "sample_rate": SAMPLE_RATE, "augment": True,
+               "spec_augment": False, "split": "actor-disjoint-70/15/15-v3", "seed": 42,
+               "augmentation": [NOISE_FACTOR, PITCH_SHIFT_STEPS, TIME_STRETCH_RATES]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def cache_is_valid(fingerprint: str) -> bool:
+    """Check the source fingerprint, manifest and all cached arrays."""
+    try:
+        metadata = json.loads(DEFAULT_CACHE_METADATA_PATH.read_text(encoding="utf-8"))
+        if metadata.get("fingerprint") != fingerprint:
+            return False
+        load_features()
+        return True
+    except (OSError, EOFError, ValueError):
+        return False
 
 # --------------------------------------------------------------------------- #
 # Augmentation hyperparameters
@@ -654,16 +693,17 @@ def discover_dataset_files(
 def split_dataset_files(
     file_paths: List[Path],
     labels: List[int],
-    test_size: float = 0.2,
+    test_size: float = 0.15,
+    validation_size: float = 0.15,
     random_state: int = 42,
-) -> Tuple[List[Path], List[Path], List[int], List[int]]:
+) -> Tuple[List[Path], List[Path], List[Path], List[int], List[int], List[int]]:
     """
-    Split the ORIGINAL (un-augmented) recording list into train/test subsets
+    Split the ORIGINAL (un-augmented) recording list into train/validation/test subsets
     using ``GroupShuffleSplit``, grouping by the RAVDESS actor directory
     (Actor_01 ... Actor_24), not by individual recording.
 
-    This prevents recordings from the same actor appearing in both train
-    and test. The split is performed on the original recordings before
+    This prevents recordings from the same actor appearing in multiple
+    splits. The split is performed on the original recordings before
     augmentation, so augmented variants are generated only from training
     actors. This is an actor-disjoint evaluation split; it is a more
     demanding test of generalization to unseen speakers.
@@ -679,15 +719,17 @@ def split_dataset_files(
         returned by ``discover_dataset_files``.
     labels : List[int]
         Parallel list of integer emotion labels.
-    test_size : float, default=0.2
+    test_size : float, default=0.15
         Fraction of ACTORS (not augmented rows) to hold out for testing.
+    validation_size : float, default=0.15
+        Fraction of ACTORS (not augmented rows) to hold out for validation.
     random_state : int, default=42
         Random seed for reproducibility.
 
     Returns
     -------
-    Tuple[List[Path], List[Path], List[int], List[int]]
-        ``(train_file_paths, test_file_paths, train_labels, test_labels)``.
+    Tuple
+        ``(train_paths, val_paths, test_paths, train_labels, val_labels, test_labels)``.
 
     Raises
     ------
@@ -716,14 +758,25 @@ def split_dataset_files(
 
     labels_arr = np.asarray(labels)
     splitter = GroupShuffleSplit(n_splits=1, test_size=test_size, random_state=random_state)
-    train_idx, test_idx = next(splitter.split(X=np.zeros(len(file_paths)), y=labels_arr, groups=groups))
+    if test_size <= 0 or validation_size <= 0 or test_size + validation_size >= 1:
+        raise ValueError("test_size and validation_size must be positive and sum to less than 1.")
+    train_val_idx, test_idx = next(splitter.split(X=np.zeros(len(file_paths)), y=labels_arr, groups=groups))
+    train_val_groups = groups[train_val_idx]
+    relative_val_size = validation_size / (1.0 - test_size)
+    train_idx_rel, val_idx_rel = next(GroupShuffleSplit(
+        n_splits=1, test_size=relative_val_size, random_state=random_state + 1
+    ).split(X=np.zeros(len(train_val_idx)), y=labels_arr[train_val_idx], groups=train_val_groups))
+    train_idx = train_val_idx[train_idx_rel]
+    val_idx = train_val_idx[val_idx_rel]
 
     train_file_paths = [file_paths[i] for i in train_idx]
+    val_file_paths = [file_paths[i] for i in val_idx]
     test_file_paths = [file_paths[i] for i in test_idx]
     train_labels = [labels[i] for i in train_idx]
+    val_labels = [labels[i] for i in val_idx]
     test_labels = [labels[i] for i in test_idx]
 
-    if not train_file_paths or not test_file_paths:
+    if not train_file_paths or not val_file_paths or not test_file_paths:
         raise ValueError(
             "GroupShuffleSplit produced an empty train or test split. "
             "Check test_size and the number of input files."
@@ -731,25 +784,28 @@ def split_dataset_files(
 
     # Defensive verification: no actor may appear on both sides.
     train_actors = {Path(p).parent.name for p in train_file_paths}
+    val_actors = {Path(p).parent.name for p in val_file_paths}
     test_actors = {Path(p).parent.name for p in test_file_paths}
-    overlap = train_actors & test_actors
+    overlap = (train_actors & val_actors) | (train_actors & test_actors) | (val_actors & test_actors)
     if overlap:
         raise RuntimeError(
             f"INTERNAL ERROR: actor(s) appear in both splits: {sorted(overlap)}"
         )
 
     logger.info(
-        "Actor-wise split: %d actors -> %d train / %d test; "
-        "%d/%d source recordings (test_size=%.2f).",
+        "Actor-wise split: %d actors -> %d train / %d validation / %d test; "
+        "%d/%d/%d source recordings (test_size=%.2f).",
         len(np.unique(groups)),
         len(train_actors),
+        len(val_actors),
         len(test_actors),
         len(train_file_paths),
+        len(val_file_paths),
         len(test_file_paths),
         test_size,
     )
 
-    return train_file_paths, test_file_paths, train_labels, test_labels
+    return train_file_paths, val_file_paths, test_file_paths, train_labels, val_labels, test_labels
 
 
 def process_files(
@@ -887,21 +943,20 @@ def process_dataset(
     sample_rate: int = SAMPLE_RATE,
     augment: bool = True,
     spec_augment: bool = False,
-    test_size: float = 0.2,
+    test_size: float = 0.15,
     random_state: int = 42,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Leakage-safe end-to-end dataset preparation:
 
         1. Discover all original RAVDESS files (``discover_dataset_files``).
-        2. Split them into train/test FILE LISTS using ``GroupShuffleSplit``
+        2. Split them into train/validation/test FILE LISTS using ``GroupShuffleSplit``
            grouped by actor identity (``Actor_XX``) -- this happens BEFORE
            any augmentation exists. No actor appears in both splits.
         3. Extract features for the training files WITH augmentation and
            (optionally) SpecAugment (``process_files(..., augment=True)``).
-        4. Extract features for the test files WITHOUT any augmentation or
-           masking (``process_files(..., augment=False)``) -- the held-out
-           split contains only clean, original audio.
+        4. Extract features for validation and test files WITHOUT augmentation
+           or masking. Both splits contain only clean, original audio.
 
     Because the split decision is made on the 1,440 original files before
     any augmented rows are generated, it is structurally impossible for an
@@ -923,8 +978,10 @@ def process_dataset(
     spec_augment : bool, default=True
         If True, additionally apply SpecAugment-style masking to augmented
         TRAINING rows only. Has no effect if ``augment=False``.
-    test_size : float, default=0.2
+    test_size : float, default=0.15
         Fraction of ACTORS to hold out for the test split.
+    validation_size : float, default=0.15
+        Fraction of ACTORS to hold out for validation.
     random_state : int, default=42
         Random seed for the actor-level split, for reproducibility.
 
@@ -941,11 +998,12 @@ def process_dataset(
         If ``data_dir`` does not exist.
     RuntimeError
         If no valid samples could be extracted, or if the internal
-        train/test file-overlap check fails.
+        actor overlap check across training, validation and test fails.
     """
     file_paths, labels = discover_dataset_files(data_dir=data_dir)
+    np.random.seed(random_state)
 
-    train_paths, test_paths, train_labels, test_labels = split_dataset_files(
+    train_paths, val_paths, test_paths, train_labels, val_labels, test_labels = split_dataset_files(
         file_paths, labels, test_size=test_size, random_state=random_state
     )
 
@@ -959,6 +1017,11 @@ def process_dataset(
         spec_augment=spec_augment,
     )
 
+    X_val, y_val = process_files(
+        val_paths, val_labels, n_mfcc=n_mfcc, sample_rate=sample_rate,
+        augment=False, spec_augment=False,
+    )
+
     logger.info("Extracting features for the TEST split (augment=False, always clean)...")
     X_test, y_test = process_files(
         test_paths,
@@ -970,14 +1033,13 @@ def process_dataset(
     )
 
     logger.info(
-        "Dataset preparation complete. X_train=%s, y_train=%s, X_test=%s, y_test=%s",
+        "Dataset preparation complete. X_train=%s, X_val=%s, X_test=%s",
         X_train.shape,
-        y_train.shape,
+        X_val.shape,
         X_test.shape,
-        y_test.shape,
     )
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 # --------------------------------------------------------------------------- #
@@ -985,16 +1047,19 @@ def process_dataset(
 # --------------------------------------------------------------------------- #
 def save_features(
     X_train: np.ndarray,
+    X_val: np.ndarray,
     X_test: np.ndarray,
     y_train: np.ndarray,
+    y_val: np.ndarray,
     y_test: np.ndarray,
+    fingerprint: str = "",
     x_train_path: str | Path = DEFAULT_X_TRAIN_PATH,
     x_test_path: str | Path = DEFAULT_X_TEST_PATH,
     y_train_path: str | Path = DEFAULT_Y_TRAIN_PATH,
     y_test_path: str | Path = DEFAULT_Y_TEST_PATH,
 ) -> None:
     """
-    Save the pre-split train/test feature matrices and label vectors to
+    Save the pre-split training/validation/test feature matrices and labels to
     disk as ``.npy`` files.
 
     Saving the split explicitly (rather than one combined ``X``/``y`` pair
@@ -1014,14 +1079,27 @@ def save_features(
         Output paths for each array. Defaults write into
         ``data/processed/``.
     """
-    paths = [x_train_path, x_test_path, y_train_path, y_test_path]
-    arrays = [X_train, X_test, y_train, y_test]
+    paths = [x_train_path, DEFAULT_X_VAL_PATH, x_test_path,
+             y_train_path, DEFAULT_Y_VAL_PATH, y_test_path]
+    arrays = [X_train, X_val, X_test, y_train, y_val, y_test]
 
     for path in paths:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
 
     for path, array in zip(paths, arrays):
         np.save(path, array)
+
+    metadata = {
+        "schema_version": 3,
+        "feature_dim": int(X_train.shape[1]),
+        "shapes": [list(array.shape) for array in arrays],
+        "array_sha256": [_sha256_file(path) for path in paths],
+        "split": "actor-disjoint-70/15/15-v3",
+        "random_state": 42,
+        "fingerprint": fingerprint,
+    }
+    DEFAULT_CACHE_METADATA_PATH.parent.mkdir(parents=True, exist_ok=True)
+    DEFAULT_CACHE_METADATA_PATH.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
     logger.info(
         "Saved split features: X_train=%s -> '%s', X_test=%s -> '%s', "
@@ -1038,13 +1116,15 @@ def save_features(
 
 
 def load_features(
-    x_train_path: str | Path = DEFAULT_X_TRAIN_PATH,
-    x_test_path: str | Path = DEFAULT_X_TEST_PATH,
-    y_train_path: str | Path = DEFAULT_Y_TRAIN_PATH,
-    y_test_path: str | Path = DEFAULT_Y_TEST_PATH,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    x_train_path: str | Path | None = None,
+    x_test_path: str | Path | None = None,
+    y_train_path: str | Path | None = None,
+    y_test_path: str | Path | None = None,
+    x_val_path: str | Path | None = None,
+    y_val_path: str | Path | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Load previously saved, pre-split train/test feature matrices and label
+    Load previously saved, pre-split training/validation/test feature matrices and labels
     vectors from disk.
 
     Parameters
@@ -1062,7 +1142,20 @@ def load_features(
     FileNotFoundError
         If any of the four files does not exist.
     """
-    paths = [x_train_path, x_test_path, y_train_path, y_test_path]
+    x_train_path = x_train_path or DEFAULT_X_TRAIN_PATH
+    x_val_path = x_val_path or DEFAULT_X_VAL_PATH
+    x_test_path = x_test_path or DEFAULT_X_TEST_PATH
+    y_train_path = y_train_path or DEFAULT_Y_TRAIN_PATH
+    y_val_path = y_val_path or DEFAULT_Y_VAL_PATH
+    y_test_path = y_test_path or DEFAULT_Y_TEST_PATH
+    paths = [x_train_path, x_val_path, x_test_path, y_train_path, y_val_path, y_test_path]
+    if not DEFAULT_CACHE_METADATA_PATH.exists():
+        raise ValueError("Processed feature cache has no metadata; regenerate with --force-extract.")
+    metadata = json.loads(DEFAULT_CACHE_METADATA_PATH.read_text(encoding="utf-8"))
+    if (metadata.get("schema_version") != 3
+            or metadata.get("split") != "actor-disjoint-70/15/15-v3"
+            or metadata.get("feature_dim") != FEATURE_DIM):
+        raise ValueError("Processed feature cache metadata is stale; regenerate with --force-extract.")
     missing = [str(p) for p in paths if not Path(p).exists()]
 
     if missing:
@@ -1071,17 +1164,31 @@ def load_features(
             "Run process_dataset() + save_features() first."
         )
 
-    X_train, X_test, y_train, y_test = (np.load(p) for p in paths)
+    arrays = [np.load(path, allow_pickle=False) for path in paths]
+    X_train, X_val, X_test, y_train, y_val, y_test = arrays
+    if [_sha256_file(path) for path in paths] != metadata.get("array_sha256"):
+        raise ValueError("Processed feature cache checksum mismatch; regenerate with --force-extract.")
+    if [list(array.shape) for array in arrays] != metadata.get("shapes"):
+        raise ValueError("Processed feature cache shape metadata does not match; regenerate with --force-extract.")
+    if any(array.ndim != 2 for array in arrays[:3]) or any(array.ndim != 1 for array in arrays[3:]):
+        raise ValueError("Processed feature arrays have invalid dimensions; regenerate with --force-extract.")
+    if not (X_train.shape[1] == X_val.shape[1] == X_test.shape[1] == FEATURE_DIM):
+        raise ValueError("Processed feature dimension mismatch; regenerate with --force-extract.")
+    if not (len(X_train) == len(y_train) and len(X_val) == len(y_val) and len(X_test) == len(y_test)):
+        raise ValueError("Processed feature/label counts do not match; regenerate with --force-extract.")
+    if any(not np.isfinite(array).all() for array in arrays):
+        raise ValueError("Processed feature cache contains non-finite values; regenerate with --force-extract.")
+    if any(np.any((labels < 0) | (labels >= len(EMOTION_LABELS))) for labels in (y_train, y_val, y_test)):
+        raise ValueError("Processed label cache contains out-of-range classes; regenerate with --force-extract.")
 
     logger.info(
-        "Loaded split features: X_train=%s, X_test=%s, y_train=%s, y_test=%s.",
+        "Loaded split features: X_train=%s, X_val=%s, X_test=%s.",
         X_train.shape,
+        X_val.shape,
         X_test.shape,
-        y_train.shape,
-        y_test.shape,
     )
 
-    return X_train, X_test, y_train, y_test
+    return X_train, X_val, X_test, y_train, y_val, y_test
 
 
 # --------------------------------------------------------------------------- #
@@ -1089,7 +1196,9 @@ def load_features(
 # --------------------------------------------------------------------------- #
 if __name__ == "__main__":
     logger.info("Starting standalone feature extraction run (leakage-safe split)...")
-    X_train_data, X_test_data, y_train_data, y_test_data = process_dataset(
+    X_train_data, X_val_data, X_test_data, y_train_data, y_val_data, y_test_data = process_dataset(
         augment=True, spec_augment=False
     )
-    save_features(X_train_data, X_test_data, y_train_data, y_test_data)
+    save_features(X_train_data, X_val_data, X_test_data, y_train_data, y_val_data,
+                  y_test_data, fingerprint=dataset_fingerprint())
+

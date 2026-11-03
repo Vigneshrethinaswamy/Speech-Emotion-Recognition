@@ -2,16 +2,16 @@
 data_loader.py
 ===============
 
-Loads the ALREADY-SPLIT acoustic feature arrays (``X_train.npy`` /
-``X_test.npy`` / ``y_train.npy`` / ``y_test.npy``) and prepares them for
+Loads the ALREADY-SPLIT acoustic feature arrays (training, validation and
+test) and prepares them for
 CNN-BiLSTM training (v4 - leakage-safe; splitting removed from this module).
 
-    1. Load the four pre-split arrays from disk -- the train/test split
-       itself is now decided in ``feature_extraction.process_dataset()``,
-       on actor identity (Actor_XX), BEFORE augmentation exists. This module no
+    1. Load the six pre-split arrays from disk -- the actor-disjoint split
+       is decided in ``feature_extraction.process_dataset()`` BEFORE
+       augmentation exists. This module no
        longer calls ``train_test_split`` (or any splitter) at all.
     2. Fit a ``StandardScaler`` on the TRAINING split only, then apply the
-       same fitted transform to both train and test splits. This avoids a
+       same fitted transform to validation and test splits. This avoids a
        SECOND, independent leakage vector: even with a correct actor-level
        split, fitting the scaler on combined data would leak test-set
        statistics into the features the model trains on.
@@ -59,16 +59,20 @@ try:
     from feature_extraction import (
         DEFAULT_X_TEST_PATH,
         DEFAULT_X_TRAIN_PATH,
+        DEFAULT_X_VAL_PATH,
         DEFAULT_Y_TEST_PATH,
         DEFAULT_Y_TRAIN_PATH,
+        DEFAULT_Y_VAL_PATH,
         load_features,
     )
 except ImportError:  # pragma: no cover
     from src.feature_extraction import (
         DEFAULT_X_TEST_PATH,
         DEFAULT_X_TRAIN_PATH,
+        DEFAULT_X_VAL_PATH,
         DEFAULT_Y_TEST_PATH,
         DEFAULT_Y_TRAIN_PATH,
+        DEFAULT_Y_VAL_PATH,
         load_features,
     )
 
@@ -84,7 +88,7 @@ NUM_CLASSES: int = 8
 
 #: Default path for the persisted StandardScaler, fitted on the training
 #: split. predict.py loads this to transform new audio identically.
-DEFAULT_SCALER_PATH = Path("models/scaler.pkl")
+DEFAULT_SCALER_PATH = Path(__file__).resolve().parents[1] / "models" / "scaler.pkl"
 
 
 def reshape_for_cnn(X: np.ndarray) -> np.ndarray:
@@ -212,17 +216,18 @@ def load_scaler(scaler_path: str | Path = DEFAULT_SCALER_PATH) -> StandardScaler
 def load_and_prepare_data(
     x_train_path: str | Path = DEFAULT_X_TRAIN_PATH,
     x_test_path: str | Path = DEFAULT_X_TEST_PATH,
+    x_val_path: str | Path = DEFAULT_X_VAL_PATH,
     y_train_path: str | Path = DEFAULT_Y_TRAIN_PATH,
     y_test_path: str | Path = DEFAULT_Y_TEST_PATH,
+    y_val_path: str | Path = DEFAULT_Y_VAL_PATH,
     num_classes: int = NUM_CLASSES,
     scaler_path: str | Path = DEFAULT_SCALER_PATH,
     return_class_weights: bool = False,
 ):
     """
-    Load the pre-split (leakage-safe) feature arrays and produce CNN-ready,
-    standardized train/test data.
+    Load the actor-disjoint feature arrays and produce CNN-ready data.
 
-    NOTE: this function no longer performs any train/test splitting. The
+    NOTE: this function no longer performs any train/validation/test splitting. The
     split was already decided in ``feature_extraction.process_dataset()``
     on actor identity (Actor_XX), before augmentation existed. This function's
     job is strictly: load the four pre-split arrays, fit/apply
@@ -247,12 +252,12 @@ def load_and_prepare_data(
     -------
     Tuple
         If ``return_class_weights`` is False (default):
-            ``(X_train, X_test, y_train, y_test)`` where the feature arrays
-            are standardized (zero mean / unit variance, fit on train only)
+            ``(X_train, X_val, X_test, y_train, y_val, y_test)`` where the feature arrays
+            are standardized (fit on training features only)
             and reshaped to ``(n_samples, n_features, 1)``, and the label
             arrays are one-hot encoded with shape ``(n_samples, num_classes)``.
         If ``return_class_weights`` is True:
-            ``(X_train, X_test, y_train, y_test, class_weights)`` with the
+            ``(X_train, X_val, X_test, y_train, y_val, y_test, class_weights)`` with the
             same arrays as above plus a ``Dict[int, float]`` of balanced
             class weights.
 
@@ -263,11 +268,13 @@ def load_and_prepare_data(
     ValueError
         If the loaded arrays are empty or internally mismatched in length.
     """
-    X_train, X_test, y_train, y_test = load_features(
+    X_train, X_val, X_test, y_train, y_val, y_test = load_features(
         x_train_path=x_train_path,
         x_test_path=x_test_path,
         y_train_path=y_train_path,
         y_test_path=y_test_path,
+        x_val_path=x_val_path,
+        y_val_path=y_val_path,
     )
 
     if X_train.shape[0] != y_train.shape[0]:
@@ -288,32 +295,35 @@ def load_and_prepare_data(
     # statistics into training, inflating validation performance.
     scaler = fit_and_save_scaler(X_train, scaler_path=scaler_path)
     X_train = scaler.transform(X_train)
+    X_val = scaler.transform(X_val)
     X_test = scaler.transform(X_test)
 
     class_weights = compute_class_weights(y_train) if return_class_weights else None
 
     X_train = reshape_for_cnn(X_train)
+    X_val = reshape_for_cnn(X_val)
     X_test = reshape_for_cnn(X_test)
 
     y_train_cat = tf.keras.utils.to_categorical(y_train, num_classes=num_classes)
+    y_val_cat = tf.keras.utils.to_categorical(y_val, num_classes=num_classes)
     y_test_cat = tf.keras.utils.to_categorical(y_test, num_classes=num_classes)
 
     logger.info(
-        "Data ready. X_train=%s, X_test=%s, y_train=%s, y_test=%s",
+        "Data ready. X_train=%s, X_val=%s, X_test=%s",
         X_train.shape,
+        X_val.shape,
         X_test.shape,
-        y_train_cat.shape,
-        y_test_cat.shape,
     )
 
     if return_class_weights:
-        return X_train, X_test, y_train_cat, y_test_cat, class_weights
+        return X_train, X_val, X_test, y_train_cat, y_val_cat, y_test_cat, class_weights
 
-    return X_train, X_test, y_train_cat, y_test_cat
+    return X_train, X_val, X_test, y_train_cat, y_val_cat, y_test_cat
 
 
 if __name__ == "__main__":
-    X_train, X_test, y_train, y_test, weights = load_and_prepare_data(
+    X_train, X_val, X_test, y_train, y_val, y_test, weights = load_and_prepare_data(
         return_class_weights=True
     )
-    logger.info("Standalone data_loader run complete. Class weights: %s", weights)  
+    logger.info("Standalone data_loader run complete. Class weights: %s", weights)
+

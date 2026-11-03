@@ -30,8 +30,8 @@ Responsibilities
        (all confirmed to work correctly against a ``tf.data.Dataset``
        yielding ``(x, y, sample_weight)`` triples; see verification notes
        at the bottom of this docstring).
-    7. Persist the best model to ``models/emotion_model.keras``.
-    8. Generate and save accuracy/loss training curves to the ``plots/``
+    7. Persist the best model to the configured checkpoint path.
+    8. Generate accuracy/loss curves in the configured training directory.
        directory (``accuracy_plot.png`` / ``loss_plot.png``; the
        confusion matrix is produced separately by ``evaluate.py``).
 
@@ -50,11 +50,10 @@ the model's real, unaltered generalization performance.
 
 Evaluation protocol note
 -----------------------
-The current feature-extraction pipeline groups the original RAVDESS
-recordings by Actor_XX before augmentation. All recordings from a speaker
-are assigned to one side of the train/test split, augmented variants are
-generated only for training actors, and test recordings remain unaugmented.
-The held-out test set therefore evaluates actors not seen during training.
+The feature-extraction pipeline groups original RAVDESS recordings by
+Actor_XX before augmentation. All recordings from a speaker are assigned
+to one of training, validation, or test; augmented variants are generated
+only for training actors, and validation/test recordings remain clean.
 Existing cached feature arrays must be regenerated with --force-extract
 if they were created by an older recording-level split.
 
@@ -82,6 +81,7 @@ Author: Vignesh R
 from __future__ import annotations
 
 import logging
+import random
 from pathlib import Path
 from typing import Tuple
 
@@ -99,10 +99,10 @@ from tensorflow.keras.callbacks import (
 )
 
 try:
-    from data_loader import load_and_prepare_data
+    from data_loader import DEFAULT_SCALER_PATH, load_and_prepare_data
     from model import build_model
 except ImportError:  # pragma: no cover
-    from src.data_loader import load_and_prepare_data
+    from src.data_loader import DEFAULT_SCALER_PATH, load_and_prepare_data
     from src.model import build_model
 
 logging.basicConfig(
@@ -125,8 +125,9 @@ EPOCHS: int = 50
 BATCH_SIZE: int = 32
 LEARNING_RATE: float = 5e-4
 
-DEFAULT_MODEL_PATH = Path("models/emotion_model.keras")
-DEFAULT_PLOTS_DIR = Path("plots")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_MODEL_PATH = PROJECT_ROOT / "models" / "emotion_model.keras"
+DEFAULT_PLOTS_DIR = PROJECT_ROOT / "plots"
 
 EARLY_STOPPING_PATIENCE: int = 8
 REDUCE_LR_PATIENCE: int = 4
@@ -320,9 +321,11 @@ def make_mixup_dataset(
 
     dataset = tf.data.Dataset.from_tensor_slices((X, y, sample_weights))
     dataset = dataset.shuffle(buffer_size=n_samples, seed=seed, reshuffle_each_iteration=True)
-    dataset = dataset.batch(batch_size, drop_remainder=True)
+    dataset = dataset.batch(batch_size, drop_remainder=False)
+    dataset = dataset.enumerate()
 
-    def _mixup_batch(x_batch, y_batch, w_batch):
+    def _mixup_batch(batch_index, batch):
+        x_batch, y_batch, w_batch = batch
         x_batch = tf.cast(x_batch, tf.float32)
         y_batch = tf.cast(y_batch, tf.float32)
         w_batch = tf.cast(w_batch, tf.float32)
@@ -333,8 +336,11 @@ def make_mixup_dataset(
         # sampler in tf.random, so we use the standard Gamma-ratio
         # construction: if U ~ Gamma(a, 1) and V ~ Gamma(a, 1), then
         # U / (U + V) ~ Beta(a, a)).
-        gamma1 = tf.random.gamma(shape=[batch_len], alpha=alpha)
-        gamma2 = tf.random.gamma(shape=[batch_len], alpha=alpha)
+        batch_seed = tf.stack([tf.cast(seed, tf.int32), tf.cast(batch_index, tf.int32)])
+        gamma1 = tf.random.stateless_gamma(shape=[batch_len], seed=batch_seed, alpha=alpha)
+        gamma2 = tf.random.stateless_gamma(
+            shape=[batch_len], seed=tf.random.experimental.stateless_fold_in(batch_seed, 1), alpha=alpha
+        )
         lam = gamma1 / (gamma1 + gamma2 + 1e-8)
 
         # Reshape lambda for broadcasting against (batch, features, 1) and
@@ -342,7 +348,9 @@ def make_mixup_dataset(
         lam_x = tf.reshape(lam, [batch_len, 1, 1])
         lam_y = tf.reshape(lam, [batch_len, 1])
 
-        shuffled_indices = tf.random.shuffle(tf.range(batch_len))
+        shuffled_indices = tf.random.experimental.stateless_shuffle(
+            tf.range(batch_len), seed=tf.random.experimental.stateless_fold_in(batch_seed, 2)
+        )
         x_shuffled = tf.gather(x_batch, shuffled_indices)
         y_shuffled = tf.gather(y_batch, shuffled_indices)
         w_shuffled = tf.gather(w_batch, shuffled_indices)
@@ -353,7 +361,7 @@ def make_mixup_dataset(
 
         return x_mixed, y_mixed, w_mixed
 
-    dataset = dataset.map(_mixup_batch, num_parallel_calls=tf.data.AUTOTUNE)
+    dataset = dataset.map(_mixup_batch, num_parallel_calls=tf.data.AUTOTUNE, deterministic=True)
     dataset = dataset.prefetch(tf.data.AUTOTUNE)
 
     return dataset
@@ -368,7 +376,10 @@ def train_model(
     use_mixup: bool = USE_MIXUP,
     mixup_alpha: float = MIXUP_ALPHA,
     learning_rate: float = LEARNING_RATE,
-) -> Tuple[tf.keras.Model, History]:
+    return_test_data: bool = False,
+    scaler_path: str | Path = DEFAULT_SCALER_PATH,
+    seed: int = RANDOM_SEED,
+) -> Tuple[tf.keras.Model, History] | Tuple[tf.keras.Model, History, np.ndarray, np.ndarray]:
     """
     Run the full training routine: load data, build the model, train with
     callbacks (and optionally Mixup), save the best checkpoint, and
@@ -402,6 +413,12 @@ def train_model(
         strength. Only used when ``use_mixup=True``.
     learning_rate : float, default=5e-4
         Learning rate passed to ``model.build_model()``.
+    return_test_data : bool, default=False
+        When true, append prepared held-out test features and labels to the
+        return tuple so callers can evaluate without loading and scaling again.
+    seed : int, default=42
+        Seed Python, NumPy, TensorFlow/Keras, array shuffling, and Mixup
+        randomness. The default preserves the historical seed-42 behavior.
 
     Returns
     -------
@@ -409,9 +426,12 @@ def train_model(
         The trained model (with best weights restored) and its training
         history.
     """
-    logger.info("Loading and preparing data for training...")
-    X_train, X_test, y_train, y_test, class_weights = load_and_prepare_data(
-        return_class_weights=True
+    logger.info("Loading and preparing data for training (seed=%d)...", seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    tf.keras.utils.set_random_seed(seed)
+    X_train, X_val, X_test, y_train, y_val, y_test, class_weights = load_and_prepare_data(
+        return_class_weights=True, scaler_path=scaler_path
     )
 
     input_shape = (X_train.shape[1], X_train.shape[2])
@@ -426,7 +446,7 @@ def train_model(
         batch_size,
         learning_rate,
         X_train.shape[0],
-        X_test.shape[0],
+        X_val.shape[0],
         "enabled" if use_class_weights else "disabled",
         f"enabled (alpha={mixup_alpha})" if use_mixup else "disabled",
     )
@@ -449,7 +469,7 @@ def train_model(
             sample_weights,
             batch_size=batch_size,
             alpha=mixup_alpha,
-            seed=RANDOM_SEED,
+            seed=seed,
         )
 
         # Validation data is passed as a plain, UNMIXED tuple. Mixup and
@@ -457,7 +477,7 @@ def train_model(
         # split must always reflect genuine, unaltered model performance.
         history = model.fit(
             train_dataset,
-            validation_data=(X_test, y_test),
+            validation_data=(X_val, y_val),
             epochs=epochs,
             callbacks=callbacks,
             verbose=1,
@@ -469,7 +489,7 @@ def train_model(
         history = model.fit(
             X_train,
             y_train,
-            validation_data=(X_test, y_test),
+            validation_data=(X_val, y_val),
             epochs=epochs,
             batch_size=batch_size,
             callbacks=callbacks,
@@ -481,6 +501,8 @@ def train_model(
 
     plot_training_history(history, plots_dir=plots_dir)
 
+    if return_test_data:
+        return model, history, X_test, y_test
     return model, history
 
 
@@ -488,3 +510,4 @@ if __name__ == "__main__":
     trained_model, train_history = train_model()
     final_val_acc = max(train_history.history.get("val_accuracy", [0.0]))
     logger.info("Standalone train.py run complete. Best val_accuracy=%.4f", final_val_acc)
+

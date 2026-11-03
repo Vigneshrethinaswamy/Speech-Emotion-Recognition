@@ -1,0 +1,149 @@
+{
+  "run_id": "20261102-224122",
+  "seed": 42,
+  "split": "actor-disjoint-16/4/4",
+  "cache_schema": 3,
+  "selection_metric": "validation macro F1, evaluated after val_loss early stopping",
+  "test_set_used": false,
+  "baseline": {
+    "checkpoint": "outputs/full_run/models/best_model.keras",
+    "macro_f1": 0.4068886239100657,
+    "weighted_f1": 0.42766532582153033,
+    "accuracy": 0.4375,
+    "classification_report": {
+      "Neutral": {
+        "precision": 0.2,
+        "recall": 0.0625,
+        "f1-score": 0.09523809523809523,
+        "support": 16.0
+      },
+      "Calm": {
+        "precision": 0.52,
+        "recall": 0.40625,
+        "f1-score": 0.45614035087719296,
+        "support": 32.0
+      },
+      "Happy": {
+        "precision": 0.5263157894736842,
+        "recall": 0.3125,
+        "f1-score": 0.39215686274509803,
+        "support": 32.0
+      },
+      "Sad": {
+        "precision": 0.25,
+        "recall": 0.3125,
+        "f1-score": 0.2777777777777778,
+        "support": 32.0
+      },
+      "Angry": {
+        "precision": 0.6296296296296297,
+        "recall": 0.53125,
+        "f1-score": 0.576271186440678,
+        "support": 32.0
+      },
+      "Fearful": {
+        "precision": 0.36065573770491804,
+        "recall": 0.6875,
+        "f1-score": 0.4731182795698925,
+        "support": 32.0
+      },
+      "Disgust": {
+        "precision": 0.4583333333333333,
+        "recall": 0.34375,
+        "f1-score": 0.39285714285714285,
+        "support": 32.0
+      },
+      "Surprised": {
+        "precision": 0.5384615384615384,
+        "recall": 0.65625,
+        "f1-score": 0.5915492957746479,
+        "support": 32.0
+      },
+      "accuracy": 0.4375,
+      "macro avg": {
+        "precision": 0.435424503575388,
+        "recall": 0.4140625,
+        "f1-score": 0.4068886239100657,
+        "support": 240.0
+      },
+      "weighted avg": {
+        "precision": 0.45111947048041384,
+        "recall": 0.4375,
+        "f1-score": 0.42766532582153033,
+        "support": 240.0
+      }
+    }
+  },
+  "experiment": {
+    "change": "disable class weighting only; retain Mixup, architecture, seed and optimizer settings",
+    "checkpoint": "outputs\\experiments\\20261102-224122\\no_class_weights.keras",
+    "epochs_run": 16,
+    "best_val_loss_epoch": 8,
+    "macro_f1": 0.4085315620064567,
+    "weighted_f1": 0.4357669994735538,
+    "accuracy": 0.4583333333333333,
+    "classification_report": {
+      "Neutral": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1-score": 0.0,
+        "support": 16.0
+      },
+      "Calm": {
+        "precision": 0.45161290322580644,
+        "recall": 0.4375,
+        "f1-score": 0.4444444444444444,
+        "support": 32.0
+      },
+      "Happy": {
+        "precision": 0.5454545454545454,
+        "recall": 0.375,
+        "f1-score": 0.4444444444444444,
+        "support": 32.0
+      },
+      "Sad": {
+        "precision": 0.26,
+        "recall": 0.40625,
+        "f1-score": 0.3170731707317073,
+        "support": 32.0
+      },
+      "Angry": {
+        "precision": 0.5833333333333334,
+        "recall": 0.65625,
+        "f1-score": 0.6176470588235294,
+        "support": 32.0
+      },
+      "Fearful": {
+        "precision": 0.5121951219512195,
+        "recall": 0.65625,
+        "f1-score": 0.5753424657534246,
+        "support": 32.0
+      },
+      "Disgust": {
+        "precision": 0.4666666666666667,
+        "recall": 0.21875,
+        "f1-score": 0.2978723404255319,
+        "support": 32.0
+      },
+      "Surprised": {
+        "precision": 0.4888888888888889,
+        "recall": 0.6875,
+        "f1-score": 0.5714285714285714,
+        "support": 32.0
+      },
+      "accuracy": 0.4583333333333333,
+      "macro avg": {
+        "precision": 0.41351893244005755,
+        "recall": 0.4296875,
+        "f1-score": 0.4085315620064567,
+        "support": 240.0
+      },
+      "weighted avg": {
+        "precision": 0.4410868612693947,
+        "recall": 0.4583333333333333,
+        "f1-score": 0.4357669994735538,
+        "support": 240.0
+      }
+    }
+  }
+}

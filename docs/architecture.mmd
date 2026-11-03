@@ -1,0 +1,15 @@
+flowchart LR
+    A[RAVDESS WAV recordings] --> B[Parse labels and actor IDs]
+    B --> C[Group split before augmentation]
+    C --> D[Train actors: waveform augmentation]
+    C --> E[Validation/test actors: original audio]
+    D --> F[Extract and mean-pool 275 acoustic features]
+    E --> F
+    F --> G[Fit StandardScaler on train only]
+    G --> H[Conv1D 64 + Conv1D 128]
+    H --> I[Bidirectional LSTM 128]
+    I --> J[Dense 256 + Dense 128]
+    J --> K[8-class softmax]
+    K --> L[Validation selection and checkpoint]
+    L --> M[Held-out test evaluation in full pipeline]
+

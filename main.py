@@ -9,15 +9,14 @@ Pipeline stages
 ----------------
     1. Feature Extraction  - Discover RAVDESS files, split them by source
                               file (GroupShuffleSplit, BEFORE augmentation
-                              exists) into train/test, then extract
+                              exists) into train/validation/test, then extract
                               features -- with augmentation + SpecAugment
-                              for the training files only, and clean
-                              (unaugmented) extraction for the test files.
+                              for training files only, and clean
+                              extraction for validation and test files.
                               Skipped if processed features already exist,
                               unless --force-extract is passed.
-    2. Data Loading         - Load the pre-split arrays, standardize
-                              (StandardScaler fit on train only), reshape
-                              for the CNN. No splitting happens here.
+    2. Data Loading         - Load and prepare cached splits once during
+                              training; fit StandardScaler on training only.
     3. Model Building       - Construct and compile the Conv1D-BiLSTM CNN.
     4. Training              - Train with Mixup (training batches only),
                               EarlyStopping, ReduceLROnPlateau, and
@@ -41,19 +40,21 @@ import argparse
 import logging
 from pathlib import Path
 
-import tensorflow as tf
-
-from src.data_loader import load_and_prepare_data
 from src.evaluate import evaluate_model
 from src.feature_extraction import (
-    DEFAULT_X_TEST_PATH,
     DEFAULT_X_TRAIN_PATH,
-    DEFAULT_Y_TEST_PATH,
-    DEFAULT_Y_TRAIN_PATH,
+    PROJECT_ROOT,
+    cache_is_valid,
+    dataset_fingerprint,
     process_dataset,
     save_features,
 )
-from src.train import DEFAULT_MODEL_PATH, train_model
+from src.train import train_model
+
+FULL_RUN_DIR = PROJECT_ROOT / "outputs" / "full_run"
+FULL_RUN_MODEL_PATH = FULL_RUN_DIR / "models" / "best_model.keras"
+FULL_RUN_TRAINING_DIR = FULL_RUN_DIR / "training"
+FULL_RUN_EVALUATION_DIR = FULL_RUN_DIR / "evaluation"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -70,7 +71,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--data-dir",
         type=str,
-        default="data/ravdess",
+        default=str(PROJECT_ROOT / "data" / "ravdess"),
         help="Path to the root RAVDESS dataset directory (default: data/ravdess).",
     )
     parser.add_argument(
@@ -87,17 +88,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=64,
+        default=32,
         help="Training batch size (default: 32).",
     )
     return parser
 
 
 def run_pipeline(
-    data_dir: str = "data/ravdess",
+    data_dir: str | Path = PROJECT_ROOT / "data" / "ravdess",
     force_extract: bool = False,
     epochs: int = 50,
-    batch_size: int = 64,
+    batch_size: int = 32,
 ) -> float:
     """
     Execute the full Feature Extraction -> Data Loading -> Model Building ->
@@ -123,50 +124,49 @@ def run_pipeline(
     # Stage 1: Feature Extraction (leakage-safe: split happens on the
     # original files BEFORE augmentation; see feature_extraction.py)
     # ----------------------------------------------------------------- #
-    features_exist = (
-        DEFAULT_X_TRAIN_PATH.exists()
-        and DEFAULT_X_TEST_PATH.exists()
-        and DEFAULT_Y_TRAIN_PATH.exists()
-        and DEFAULT_Y_TEST_PATH.exists()
-    )
+    data_dir = Path(data_dir)
+    if not data_dir.is_absolute():
+        data_dir = PROJECT_ROOT / data_dir
+    fingerprint = dataset_fingerprint(data_dir)
+    features_exist = cache_is_valid(fingerprint)
 
     if features_exist and not force_extract:
         logger.info(
-            "Cached pre-split features found at '%s', '%s', '%s', '%s'; "
+            "Validated actor-disjoint cache found at '%s'; "
             "skipping extraction. Use --force-extract to recompute.",
-            DEFAULT_X_TRAIN_PATH,
-            DEFAULT_X_TEST_PATH,
-            DEFAULT_Y_TRAIN_PATH,
-            DEFAULT_Y_TEST_PATH,
+            DEFAULT_X_TRAIN_PATH.parent,
         )
     else:
         logger.info("=== STAGE 1: Feature Extraction (group-split, leakage-safe) ===")
-        X_train, X_test, y_train, y_test = process_dataset(data_dir=data_dir)
-        save_features(X_train, X_test, y_train, y_test)
+        X_train, X_val, X_test, y_train, y_val, y_test = process_dataset(data_dir=data_dir)
+        save_features(X_train, X_val, X_test, y_train, y_val, y_test, fingerprint=fingerprint)
 
     # ----------------------------------------------------------------- #
-    # Stage 2: Data Loading
-    # ----------------------------------------------------------------- #
-    logger.info("=== STAGE 2: Data Loading ===")
-    X_train, X_test, y_train, y_test = load_and_prepare_data()
-
-    # ----------------------------------------------------------------- #
-    # Stage 3 + 4: Model Building + Training
-    # ----------------------------------------------------------------- #
-    logger.info("=== STAGE 3 & 4: Model Building + Training ===")
-    model, history = train_model(epochs=epochs, batch_size=batch_size)
+    # Data loading, scaling, and encoding happen once inside train_model;
+    # it returns the prepared held-out arrays for final evaluation.
+    logger.info("=== STAGE 2 & 3: Data Preparation, Model Building + Training ===")
+    model, history, X_test, y_test = train_model(
+        epochs=epochs,
+        batch_size=batch_size,
+        model_path=FULL_RUN_MODEL_PATH,
+        plots_dir=FULL_RUN_TRAINING_DIR,
+        return_test_data=True,
+    )
 
     # ----------------------------------------------------------------- #
     # Stage 5: Evaluation
     # ----------------------------------------------------------------- #
     logger.info("=== STAGE 5: Evaluation ===")
-    test_accuracy, report, confusion = evaluate_model(model, X_test, y_test)
+    test_accuracy, report, confusion = evaluate_model(
+        model, X_test, y_test, plots_dir=FULL_RUN_EVALUATION_DIR
+    )
 
     logger.info("=" * 60)
     logger.info("PIPELINE COMPLETE")
     logger.info("Final Test Accuracy: %.4f (%.2f%%)", test_accuracy, test_accuracy * 100)
-    logger.info("Model saved to: %s", DEFAULT_MODEL_PATH)
-    logger.info("Plots saved to: plots/")
+    logger.info("Model saved to: %s", FULL_RUN_MODEL_PATH)
+    logger.info("Training plots saved to: %s", FULL_RUN_TRAINING_DIR)
+    logger.info("Evaluation reports saved to: %s", FULL_RUN_EVALUATION_DIR)
     logger.info("=" * 60)
 
     return test_accuracy
@@ -186,3 +186,4 @@ if __name__ == "__main__":
     print("\n" + "=" * 60)
     print(f"FINAL TEST ACCURACY: {final_accuracy:.4f} ({final_accuracy * 100:.2f}%)")
     print("=" * 60)
+

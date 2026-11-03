@@ -43,7 +43,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL_PATH = Path("models/emotion_model.keras")
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "emotion_model.keras"
 
 # Module-level caches so repeated calls to predict_emotion() in the same
 # process don't reload the model/scaler from disk every time.
@@ -231,3 +231,4 @@ if __name__ == "__main__":
     )
     print(f"Predicted Emotion: {label}")
     print(f"Confidence: {score:.2%}")
+

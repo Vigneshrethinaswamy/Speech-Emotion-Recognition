@@ -1,0 +1,52 @@
+{
+  "run_id": "20261102-225131",
+  "split": "fixed actor-disjoint schema-v3 cache (16/4/4 actors)",
+  "seeds": [
+    42,
+    43,
+    44
+  ],
+  "selection_metric": "validation macro F1 only",
+  "test_evaluated": false,
+  "test_used_for_selection": false,
+  "pairing": "same seed, actor split, class weights, model, optimizer, and training settings; Mixup is the only changed setting",
+  "results": [
+    {
+      "seed": 42,
+      "baseline_mixup": {
+        "validation_macro_f1": 0.44305570879675016,
+        "epochs_run": 16
+      },
+      "no_mixup": {
+        "validation_macro_f1": 0.4172132004124959,
+        "epochs_run": 13
+      },
+      "macro_f1_difference_mixup_minus_no_mixup": 0.02584250838425428
+    },
+    {
+      "seed": 43,
+      "baseline_mixup": {
+        "validation_macro_f1": 0.3886610922339812,
+        "epochs_run": 15
+      },
+      "no_mixup": {
+        "validation_macro_f1": 0.39258930297837413,
+        "epochs_run": 13
+      },
+      "macro_f1_difference_mixup_minus_no_mixup": -0.003928210744392924
+    },
+    {
+      "seed": 44,
+      "baseline_mixup": {
+        "validation_macro_f1": 0.41523913624559095,
+        "epochs_run": 13
+      },
+      "no_mixup": {
+        "validation_macro_f1": 0.37022833814532863,
+        "epochs_run": 13
+      },
+      "macro_f1_difference_mixup_minus_no_mixup": 0.04501079810026232
+    }
+  ]
+}
+
